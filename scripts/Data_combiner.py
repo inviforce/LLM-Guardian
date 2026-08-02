@@ -29,7 +29,7 @@ def process_bipia(raw_path: str, out_dir: str):
     df = df.rename(columns={"context": "text", "user_intent": "paired_text"})
     
     df["stream"] = "indirect_context"
-    df["sample_id"] = None
+    df["sample_id"] = None 
     df["step_index"] = None
     
     df = df[SCHEMA_COLS]

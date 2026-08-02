@@ -1,0 +1,6 @@
+currently the result of indirect_context and repo_prod null are mediorcore
+
+so the base idea is to combine both of them and that will be done in different git branch to keep the current one in the same and if the resutl sare better it will be merged forceefully 
+
+as indirect context and repo prod null both are the same type of data set i.e text prompt plus context with the prompt both behaving like a one shot prompt classifier 
+
