@@ -25,6 +25,14 @@ NOTE on LOAD_TRAJECTORY:
   When disabled, the /guard/trajectory endpoint still responds, but returns
   an "Unavailable" placeholder instead of a real prediction. Defaults to
   true (full local / well-resourced deployment behavior).
+
+NOTE on HF_WEIGHTS_REPO_ID:
+  Model weights are no longer expected to be bundled in git (GitHub LFS was
+  disabled for this repo). Instead, weights are hosted on a Hugging Face
+  Hub model repo and downloaded into MODELS_DIR at container/app startup,
+  the first time it runs, if MODELS_DIR is empty or missing. Set
+  HF_WEIGHTS_REPO_ID to override the default repo id, and HF_TOKEN if the
+  weights repo is private.
 """
 
 import os
@@ -61,6 +69,52 @@ from contextlib import asynccontextmanager
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR.parent / "models"
 
+# ------------------------------------------------------------
+# Hugging Face Hub weight download (replaces git/git-lfs for weights)
+# ------------------------------------------------------------
+HF_WEIGHTS_REPO_ID = os.environ.get("HF_WEIGHTS_REPO_ID", "inviforce/llmguardian-weights")
+
+
+def _ensure_weights_downloaded() -> None:
+    """
+    Downloads model weights from the Hugging Face Hub into MODELS_DIR if
+    they aren't already present locally. Safe to call on every startup —
+    it's a no-op once weights exist on disk (e.g. persistent local dev,
+    or a container image that already bundles them).
+    """
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    already_present = MODELS_DIR.exists() and any(MODELS_DIR.iterdir())
+    if already_present:
+        print(f"[*] Model weights already present at {MODELS_DIR}, skipping download.")
+        return
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        print(
+            "[!] huggingface_hub is not installed but MODELS_DIR is empty. "
+            "Add 'huggingface_hub' to requirements.txt or place weights "
+            f"manually at {MODELS_DIR}."
+        )
+        return
+
+    print(f"[*] MODELS_DIR is empty. Downloading weights from HF Hub repo: {HF_WEIGHTS_REPO_ID}")
+    try:
+        snapshot_download(
+            repo_id=HF_WEIGHTS_REPO_ID,
+            local_dir=str(MODELS_DIR),
+            token=os.environ.get("HF_TOKEN"),  # only needed if the repo is private
+        )
+        print(f"[*] Weights downloaded to {MODELS_DIR}")
+    except Exception as e:
+        print(f"[!] Failed to download weights from HF Hub ({HF_WEIGHTS_REPO_ID}): {e}")
+        print("[!] Pipelines relying on missing files will report load_status=False.")
+
+
+# Run once at import time, before MODEL_PATHS below is used to load anything.
+_ensure_weights_downloaded()
+
 MODEL_PATHS = {
     # repo_file pipeline
     "repo_lightgbm": MODELS_DIR / "saved_repo_file_model" / "lightgbm.pkl",
@@ -76,7 +130,7 @@ MODEL_PATHS = {
     "indirect_sentence_transformer": MODELS_DIR / "saved_indirect_context_model" / "sentence_transformer",
 
     # shared transformer models
-    "cross_encoder": MODELS_DIR / "cross_encoder_weights_bipa(indirect_context)",
+    "cross_encoder": MODELS_DIR / "cross_encoder_weights_bipa",
     "deberta_lora": MODELS_DIR / "deberta_lora_weights_chunked_repo_prodnull",
     "qwen_lora": MODELS_DIR / "atbench_lora_final_v3_qwen",
 }
@@ -268,6 +322,7 @@ class LLMGuardian:
             "device": self.device,
             "cross_pipeline_mode": CROSS_PIPELINE_MODE,
             "trajectory_enabled": LOAD_TRAJECTORY,
+            "weights_repo_id": HF_WEIGHTS_REPO_ID,
             "models_loaded": self.load_status,
             # "all_ready" intentionally ignores qwen_lora when trajectory is
             # disabled by config, so /health can report "ok" on a valid
@@ -649,6 +704,7 @@ class HealthResponse(BaseModel):
     device: str
     cross_pipeline_mode: bool
     trajectory_enabled: bool
+    weights_repo_id: str
     models_loaded: Dict[str, bool]
     all_ready: bool
 
@@ -665,6 +721,7 @@ async def health():
         device=h["device"],
         cross_pipeline_mode=h["cross_pipeline_mode"],
         trajectory_enabled=h["trajectory_enabled"],
+        weights_repo_id=h["weights_repo_id"],
         models_loaded=h["models_loaded"],
         all_ready=h["all_ready"],
     )
